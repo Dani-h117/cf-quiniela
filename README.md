@@ -146,6 +146,105 @@ Crea una publicación fijada en la comunidad correspondiente:
 
 ---
 
+## Funciones nuevas (estadísticas, cuenta regresiva, imagen, rol de organizador, etc.)
+
+Estas ya vienen en el código. Las que son solo del navegador funcionan al redesplegar
+`index.html`. Las de seguridad/rol requieren un par de pasos extra que se indican abajo.
+
+**Del lado del navegador (sin configuración):**
+- **📊 Mis estadísticas** (pestaña Tabla → General): puntos, % de aciertos, marcadores
+  exactos, mejor racha de exactos y mejor semana.
+- **⏱ Cuenta regresiva** al próximo partido (arriba en Partidos).
+- **🔔 Recordatorio** en la app: avisa cuántos partidos abiertos te faltan por pronosticar.
+- **📸 Compartir imagen del ganador**: en la vista Por semana, genera una imagen del
+  campeón para postear en Engage.
+
+**Pronóstico inmutable en el servidor (#7).** Ya está activo: los pronósticos se envían por
+`/api/predict`, que verifica en el servidor que el partido siga abierto y **rechaza cambiar
+un pronóstico ya enviado**, aunque alguien intente llamar la API directamente.
+> ⚠️ Debes desplegar **las dos** funciones (`functions/api/data.js` y `functions/api/predict.js`).
+> Si subes el `index.html` nuevo sin `predict.js`, no se podrán guardar pronósticos.
+
+**Rol de organizador en Entra (#6) — opcional pero recomendado.**
+Hace que solo cuentas autorizadas puedan cargar resultados, a nivel servidor (no solo el PIN).
+
+1. En `entra.microsoft.com` → tu registro `cloud-quiniela` → **Roles de aplicación** →
+   **Crear rol de aplicación**:
+   - Nombre para mostrar: `Organizador`
+   - Tipos de miembro permitidos: **Usuarios o grupos**
+   - **Valor:** `Organizer`  ← exactamente así (lo lee el código)
+   - Descripción: cualquiera. Aplicar.
+2. Ve a **Aplicaciones empresariales** → busca `cloud-quiniela` → **Usuarios y grupos** →
+   **Agregar usuario** → elígete a ti (y a otros organizadores) y asígnales el rol **Organizador**.
+3. En Cloudflare → tu proyecto → **Settings → Environment variables**, agrega:
+   | Variable      | Valor    |
+   |---------------|----------|
+   | `ORG_ENFORCE` | `true`   |
+   | `CLIENT_ID`   | tu client id (si no lo agregaste ya) |
+   Vuelve a desplegar.
+4. Cierra sesión y entra de nuevo (para que el token traiga el rol). Como organizador,
+   la pestaña Organizador se abre sin PIN; para los demás, el servidor rechaza cargar
+   resultados.
+
+> Si NO pones `ORG_ENFORCE=true`, todo sigue como hasta ahora (el PIN es el único gate).
+> Alternativa sin roles: en vez del rol, puedes listar los object-id de los organizadores
+> en una variable `ORGANIZER_OIDS` (separados por coma).
+
+---
+
+## Recordatorio diario automático (#8) — con Power Automate (gratis, ya lo tienes)
+
+Un aviso *automático* cada mañana no se puede hacer solo con esta app (haría falta un
+servidor que envíe correos/notificaciones). Pero como tu organización tiene Microsoft 365,
+puedes armar un **flujo programado en Power Automate** (incluido) en 5 minutos:
+
+1. Ve a `make.powerautomate.com` → **Crear** → **Flujo de nube programado**.
+2. Repetir **cada día** a la hora que quieras (p. ej. 8:00 a.m.).
+3. Acción: **publicar mensaje** en un canal de **Teams** o en una comunidad de **Viva Engage**
+   (busca el conector correspondiente), con un texto como:
+   > ⚽ ¡No olvides tus pronósticos del día! https://cloud-quiniela.pages.dev
+4. Guarda. Listo: recordatorio diario sin costo.
+
+(El aviso dentro de la app —🔔— ya funciona cuando la persona la abre; esto agrega el
+empujón externo.)
+
+---
+
+## Seguridad — evitar que terceros extraigan información
+
+Esta versión incluye varias barreras para que nadie externo lea datos de las cuentas:
+
+1. **Toda la API exige un token válido de Microsoft de tu organización.** La función verifica
+   la firma del token (RS256 con las claves públicas de tu inquilino), que sea de tu
+   inquilino (`tid`), que no esté vencido y que haya sido emitido **para esta app** (`aud`).
+   Sin ese token nadie puede leer ni escribir; un atacante externo no puede obtenerlo.
+2. **CORS restringido al propio dominio.** La API solo responde al origen de tu app, no a
+   sitios externos.
+3. **Encabezados de seguridad** (archivo `_headers`): Content-Security-Policy (bloquea
+   scripts externos y limita a dónde puede conectarse la página), `frame-ancestors 'none'`
+   y `X-Frame-Options: DENY` (impiden que otra web la incruste para engañar al usuario),
+   `nosniff`, `Referrer-Policy: no-referrer`, HSTS, etc.
+4. **Escape de texto** en nombres y equipos, para evitar inyección de scripts.
+
+**Para activar el refuerzo de la audiencia del token**, agrega una variable más en
+Cloudflare (Settings → Environment variables) y vuelve a desplegar:
+
+| Variable    | Valor                                              |
+|-------------|----------------------------------------------------|
+| `CLIENT_ID` | el ID de aplicación (cliente) del Paso 2 (público) |
+| `APP_ORIGIN`| `https://TU-SUBDOMINIO.pages.dev` (opcional, fija el CORS) |
+
+> Nota honesta: esto protege muy bien frente a accesos externos. No te defiende de un
+> usuario *interno* malintencionado que ya tiene sesión (podría llamar a la API con su
+> propio token). Para ese caso está el **rol de organizador** (mencionado abajo) y el
+> bloqueo inmutable de pronósticos en el servidor. Para una quiniela entre compañeros,
+> lo que tienes ya es sólido.
+>
+> Si más adelante quieres **incrustar** la app dentro de SharePoint/Teams (en un iframe),
+> habrá que relajar `frame-ancestors`/`X-Frame-Options` para permitir ese dominio.
+
+---
+
 ## Capas gratuitas (a junio 2026 — verifica en cloudflare.com si cambió)
 
 - **Cloudflare Pages:** hosting ilimitado, gratis.

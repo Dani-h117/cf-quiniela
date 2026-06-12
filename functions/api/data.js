@@ -30,14 +30,15 @@ async function getJwks(tenantId){
   return _jwksCache;
 }
 
-async function verifyToken(token, tenantId){
+async function verifyToken(token, tenantId, clientId){
   const decoded = decodeJwt(token);
   if(!decoded) return null;
   const { hdr, payload, raw } = decoded;
 
   // Verificaciones básicas de claims
-  if(payload.tid !== tenantId) return null;
-  if(Date.now() / 1000 > payload.exp + 30) return null; // 30s de margen
+  if(payload.tid !== tenantId) return null;                 // mismo inquilino
+  if(clientId && payload.aud !== clientId) return null;     // token emitido PARA esta app
+  if(Date.now() / 1000 > payload.exp + 30) return null;     // 30s de margen
   if(!['login.microsoftonline.com','sts.windows.net'].some(iss =>
     (payload.iss||'').includes(iss))) return null;
 
@@ -58,36 +59,58 @@ async function verifyToken(token, tenantId){
   return payload;
 }
 
-/* ---------- CORS ---------- */
-const CORS = {
-  'Access-Control-Allow-Origin' : '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type'
-};
-function json(data, status=200){
-  return new Response(JSON.stringify(data), {status, headers:{...CORS,'Content-Type':'application/json'}});
+/* ---------- CORS (restringido al propio origen de la app) ---------- */
+function corsHeaders(request, env){
+  const reqOrigin = request.headers.get('Origin') || '';
+  const allowed = env.APP_ORIGIN || new URL(request.url).origin;
+  const origin = (reqOrigin === allowed) ? allowed : allowed; // solo se permite el origen de la app
+  return {
+    'Access-Control-Allow-Origin' : origin,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+    'Vary': 'Origin'
+  };
+}
+function json(data, status, cors){
+  return new Response(JSON.stringify(data), {status, headers:{...cors,'Content-Type':'application/json'}});
 }
 
 /* ---------- Handler principal ---------- */
 export async function onRequest({ request, env }){
+  const CORS = corsHeaders(request, env);
   if(request.method === 'OPTIONS') return new Response(null, { headers: CORS });
 
   // Env vars
   const TENANT_ID = env.TENANT_ID;
+  const CLIENT_ID = env.CLIENT_ID;   // opcional pero recomendado (verifica audiencia)
   const KV        = env.QUINIELA_KV;
-  if(!TENANT_ID) return json({ error:'Falta TENANT_ID en env' }, 500);
-  if(!KV)        return json({ error:'Falta el KV binding QUINIELA_KV' }, 500);
+  if(!TENANT_ID) return json({ error:'Falta TENANT_ID en env' }, 500, CORS);
+  if(!KV)        return json({ error:'Falta el KV binding QUINIELA_KV' }, 500, CORS);
 
   // Autenticación
   const auth = request.headers.get('Authorization') || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  if(!token) return json({ error:'No autorizado' }, 401);
+  if(!token) return json({ error:'No autorizado' }, 401, CORS);
 
-  const claims = await verifyToken(token, TENANT_ID);
-  if(!claims) return json({ error:'Token inválido o expirado' }, 401);
+  const claims = await verifyToken(token, TENANT_ID, CLIENT_ID);
+  if(!claims) return json({ error:'Token inválido o expirado' }, 401, CORS);
 
   const url    = new URL(request.url);
   const method = request.method;
+
+  // Autorización por rol de organizador
+  const userId  = claims.oid || claims.sub;
+  const ENFORCE = env.ORG_ENFORCE === 'true';
+  const orgList = (env.ORGANIZER_OIDS || '').split(',').map(s=>s.trim()).filter(Boolean);
+  const isOrg   = (Array.isArray(claims.roles) && claims.roles.includes('Organizer')) || orgList.includes(userId);
+  function keyGuard(key, m){
+    const isPred = key.startsWith('quiniela:preds:');
+    if(isPred && m==='POST') return 'Los pronósticos se envían por /api/predict';
+    const orgKey  = (key==='quiniela:matches' || key==='quiniela:settings' || key==='quiniela:seededV1');
+    const needsOrg = orgKey || (isPred && m==='DELETE') || (key==='quiniela:users' && m==='DELETE');
+    if(ENFORCE && needsOrg && !isOrg) return 'Tu cuenta no tiene permiso de organizador';
+    return null;
+  }
 
   try{
     /* GET /api/data?key=...    → { key, value }
@@ -96,33 +119,35 @@ export async function onRequest({ request, env }){
       const prefix = url.searchParams.get('prefix');
       if(prefix){
         const list = await KV.list({ prefix });
-        return json({ keys: list.keys.map(k => k.name) });
+        return json({ keys: list.keys.map(k => k.name) }, 200, CORS);
       }
       const key = url.searchParams.get('key');
-      if(!key) return json({ error:'falta key' }, 400);
+      if(!key) return json({ error:'falta key' }, 400, CORS);
       const val = await KV.get(key);
-      if(val === null) return json({ error:'no existe' }, 404);
-      return json({ key, value: val });
+      if(val === null) return json({ error:'no existe' }, 404, CORS);
+      return json({ key, value: val }, 200, CORS);
     }
 
     /* POST /api/data  body { key, value } → { ok: true } */
     if(method === 'POST'){
       const body = await request.json();
-      if(!body?.key) return json({ error:'falta key' }, 400);
+      if(!body?.key) return json({ error:'falta key' }, 400, CORS);
+      const g = keyGuard(String(body.key), 'POST'); if(g) return json({ error:g }, 403, CORS);
       await KV.put(String(body.key), String(body.value ?? ''));
-      return json({ ok: true });
+      return json({ ok: true }, 200, CORS);
     }
 
     /* DELETE /api/data?key=... → { ok: true } */
     if(method === 'DELETE'){
       const key = url.searchParams.get('key');
-      if(!key) return json({ error:'falta key' }, 400);
+      if(!key) return json({ error:'falta key' }, 400, CORS);
+      const g = keyGuard(key, 'DELETE'); if(g) return json({ error:g }, 403, CORS);
       await KV.delete(key);
-      return json({ ok: true });
+      return json({ ok: true }, 200, CORS);
     }
 
-    return json({ error:'método no permitido' }, 405);
+    return json({ error:'método no permitido' }, 405, CORS);
   }catch(e){
-    return json({ error: String(e?.message || e) }, 500);
+    return json({ error: String(e?.message || e) }, 500, CORS);
   }
 }

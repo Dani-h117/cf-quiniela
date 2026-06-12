@@ -175,6 +175,21 @@
   .winner .n{font-family:Archivo;font-weight:900;font-size:22px;letter-spacing:-.4px;margin-top:2px}
   .winner .p{color:var(--muted);font-size:12.5px;margin-top:2px}
 
+  .cdbar{display:flex;align-items:center;justify-content:space-between;gap:10px;background:linear-gradient(90deg,rgba(200,255,77,.09),rgba(200,255,77,.02));border:1px solid rgba(200,255,77,.22);border-radius:12px;padding:10px 14px;margin-bottom:10px}
+  .cdbar .cdlabel{font-size:12px;font-weight:600;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cdbar .cdtime{font-family:Archivo;font-weight:900;font-size:18px;color:var(--lime);font-variant-numeric:tabular-nums;letter-spacing:.5px;flex:none}
+  .remind{background:rgba(255,194,71,.1);border:1px solid rgba(255,194,71,.28);color:var(--gold);font-size:13px;font-weight:600;padding:10px 14px;border-radius:12px;margin-bottom:12px}
+  .statscard{margin-bottom:14px}
+  .statsgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:4px}
+  .statsgrid div{background:var(--bg2);border:1px solid var(--line-soft);border-radius:10px;padding:11px 8px;text-align:center}
+  .statsgrid b{display:block;font-family:Archivo;font-weight:900;font-size:21px;color:var(--lime);line-height:1}
+  .statsgrid span{display:block;font-size:10px;color:var(--muted);margin-top:5px;text-transform:uppercase;letter-spacing:.4px}
+.palmares{margin-bottom:14px}
+  .palmrow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-top:1px solid var(--line-soft);font-size:13.5px}
+  .palmrow:first-of-type{border-top:0}
+  .palmrow .pw{color:var(--muted);font-weight:600;font-size:12px;min-width:78px}
+  .palmrow .pn{flex:1;font-weight:600}
+  .palmrow .pp{font-family:Archivo;font-weight:900;color:var(--gold)}
   .weekpick{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:14px;-webkit-overflow-scrolling:touch}
   .weekpick button{flex:none;border:1px solid var(--line);background:var(--surface);color:var(--muted);font-weight:700;font-size:12.5px;padding:8px 13px;border-radius:999px;cursor:pointer;white-space:nowrap}
   .weekpick button.active{background:var(--lime);color:#06210A;border-color:var(--lime)}
@@ -439,7 +454,7 @@ const DEFAULT_SETTINGS = { pin:'1234', pExact:5, pDiff:3, pResult:1 };
 const state = {
   tab:'partidos',
   matches:[], users:[], settings:{...DEFAULT_SETTINGS},
-  preds:{}, meId:null, meName:null,
+  preds:{}, meId:null, meName:null, isOrganizer:false,
   adminUnlocked:false,
   tablaMode:'general', selectedWeek:null, selectedDay:null
 };
@@ -491,6 +506,14 @@ function isoWeekKey(iso){
   const week=1+Math.round(((t-firstThu)/86400000 - 3 + ((firstThu.getUTCDay()+6)%7))/7);
   return t.getUTCFullYear()+'-W'+String(week).padStart(2,'0');
 }
+/* Fin de la semana ISO (domingo 23:59:59) que contiene la fecha dada */
+function weekEndDate(iso){
+  const d=dObj(iso);
+  const dow=(d.getDay()+6)%7; // 0=Lun ... 6=Dom
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()+(6-dow), 23,59,59,999);
+}
+function weekIsClosed(iso){ return Date.now() > weekEndDate(iso).getTime(); }
+function weekEndLabel(iso){ const s=weekEndDate(iso); return DAYS[s.getDay()]+' '+s.getDate()+' '+MON[s.getMonth()]; }
 function userName(id){ const u=state.users.find(u=>u.id===id); return u?u.name:'—'; }
 function me(){ return state.users.find(u=>u.id===state.meId) || null; }
 
@@ -564,6 +587,84 @@ function refreshUserChip(){
 }
 
 /* ---------- Partidos ---------- */
+/* ===== Extras: cuenta regresiva, recordatorio, estadísticas, imagen ===== */
+function nextUpcomingMatch(){
+  const now=Date.now();
+  return [...state.matches].filter(m=>!m.finished && dObj(m.kickoff).getTime()>now)
+    .sort((a,b)=>dObj(a.kickoff)-dObj(b.kickoff))[0] || null;
+}
+function updateCountdown(){
+  const bar=document.getElementById('cdbar'); if(!bar) return;
+  const m=nextUpcomingMatch();
+  if(!m){ bar.style.display='none'; bar.innerHTML=''; return; }
+  let ms=dObj(m.kickoff).getTime()-Date.now(); if(ms<0) ms=0;
+  const s=Math.floor(ms/1000), d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), mn=Math.floor((s%3600)/60), sc=s%60;
+  const pad=n=>String(n).padStart(2,'0');
+  const t=d>0?`${d}d ${pad(h)}:${pad(mn)}:${pad(sc)}`:`${pad(h)}:${pad(mn)}:${pad(sc)}`;
+  bar.style.display=''; bar.innerHTML=`<span class="cdlabel">⏱ Próximo: ${esc(m.teamA)} vs ${esc(m.teamB)}</span><span class="cdtime">${t}</span>`;
+}
+function reminderBarHTML(){
+  if(!state.meId) return '';
+  const open=state.matches.filter(m=>isEditable(m) && !predOf(state.meId,m.id)).length;
+  if(open<=0) return '';
+  return `<div class="remind">🔔 Tienes <b>${open}</b> partido${open===1?'':'s'} abierto${open===1?'':'s'} sin pronosticar.</div>`;
+}
+function myStats(){
+  if(!state.meId) return null;
+  const fin=state.matches.filter(m=>m.finished).sort((a,b)=>dObj(a.kickoff)-dObj(b.kickoff));
+  let played=0, exact=0, hit=0, pts=0, streak=0, best=0;
+  for(const m of fin){
+    const p=predOf(state.meId,m.id); if(!p) continue;
+    played++; const pt=pointsFor(p,m); pts+=pt; if(pt>0) hit++;
+    if(pt===state.settings.pExact){ exact++; streak++; if(streak>best) best=streak; } else streak=0;
+  }
+  const weeks={};
+  for(const m of fin){ const w=isoWeekKey(m.kickoff); (weeks[w]=weeks[w]||[]).push(m); }
+  let bestWeek=0;
+  for(const w in weeks){ if(!weekIsClosed(weeks[w][0].kickoff)) continue;
+    let wp=0; for(const m of weeks[w]){ const p=predOf(state.meId,m.id); if(p) wp+=pointsFor(p,m); }
+    if(wp>bestWeek) bestWeek=wp;
+  }
+  return {played, exact, hit, pts, acc: played?Math.round(hit/played*100):0, streak:best, bestWeek};
+}
+function statsCardHTML(){
+  const s=myStats(); if(!s || s.played===0) return '';
+  return `<div class="card statscard"><p class="eyebrow">📊 Mis estadísticas</p>
+    <div class="statsgrid">
+      <div><b>${s.pts}</b><span>puntos</span></div>
+      <div><b>${s.acc}%</b><span>aciertos</span></div>
+      <div><b>${s.exact}</b><span>exactos</span></div>
+      <div><b>${s.streak}</b><span>racha exactos</span></div>
+      <div><b>${s.bestWeek}</b><span>mejor semana</span></div>
+      <div><b>${s.played}</b><span>jugados</span></div>
+    </div></div>`;
+}
+function shareWinnerBtn(el){ shareWinner(el.dataset.n, el.dataset.w, el.dataset.p); }
+async function shareWinner(name, weekN, pts){
+  const W=1080,H=1080, c=document.createElement('canvas'); c.width=W; c.height=H;
+  const x=c.getContext('2d');
+  const g=x.createLinearGradient(0,0,W,H); g.addColorStop(0,'#0B0E14'); g.addColorStop(1,'#161C28');
+  x.fillStyle=g; x.fillRect(0,0,W,H);
+  const rg=x.createRadialGradient(W/2,360,40,W/2,360,540); rg.addColorStop(0,'rgba(255,194,71,.25)'); rg.addColorStop(1,'rgba(255,194,71,0)');
+  x.fillStyle=rg; x.fillRect(0,0,W,H);
+  x.textAlign='center';
+  x.font='900 150px sans-serif'; x.fillText('🏆', W/2, 340);
+  x.font='800 34px Archivo, sans-serif'; x.fillStyle='#8B95A7'; x.fillText('GANADOR · SEMANA '+weekN, W/2, 440);
+  x.fillStyle='#EDF1F7'; x.font='900 84px Archivo, sans-serif';
+  let nm=name; while(x.measureText(nm).width>W-140 && nm.length>3){ nm=nm.slice(0,-1); }
+  x.fillText(nm===name?name:nm+'…', W/2, 565);
+  x.font='900 124px Archivo, sans-serif'; x.fillStyle='#C8FF4D'; x.fillText(pts+' pts', W/2, 730);
+  x.font='700 30px Inter, sans-serif'; x.fillStyle='#637087'; x.fillText('La Quiniela · Mundial', W/2, 990);
+  c.toBlob(async (blob)=>{
+    const file=new File([blob],'ganador-semana-'+weekN+'.png',{type:'image/png'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file], title:'Ganador de la semana'}); return; }catch(e){}
+    }
+    const url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download=file.name; a.click(); URL.revokeObjectURL(url);
+  },'image/png');
+}
+
 function renderPartidos(){
   if(!state.matches.length){
     view.innerHTML = `<div class="empty">
@@ -582,6 +683,8 @@ function renderPartidos(){
     state.selectedDay = dayKeys.includes(tK) ? tK : (dayKeys.find(k=> k>=tK) || dayKeys[dayKeys.length-1]);
   }
   let html='';
+  html += `<div class="cdbar" id="cdbar" style="display:none"></div>`;
+  html += reminderBarHTML();
   // day picker (estático: al cambiar de día NO se reconstruye, solo cambia la clase activa)
   html += `<div class="weekpick" id="daypick">`;
   dayKeys.forEach(k=>{
@@ -701,16 +804,26 @@ async function savePred(matchId){
   if(!state.meId){ return; }
   const m=state.matches.find(x=>x.id===matchId);
   if(!m || !isEditable(m)){ toast('Este partido ya está cerrado'); renderDayList(); return; }
+  if(predOf(state.meId, matchId)){ toast('Ya enviaste tu pronóstico'); renderDayList(); return; }
   const a=parseInt(document.getElementById('pa_'+matchId).value,10);
   const b=parseInt(document.getElementById('pb_'+matchId).value,10);
   if(isNaN(a)||isNaN(b)||a<0||b<0){ toast('Escribe un marcador válido'); return; }
-  // re-read my own predictions so we never clobber, then write only my key
-  const mine = await store.get(K.preds(state.meId)) || {};
-  mine[matchId] = {a,b};
-  await store.set(K.preds(state.meId), mine);
-  state.preds[state.meId]=mine;
+  // El servidor valida identidad, que el partido siga abierto y que no exista pronóstico previo
+  let r;
+  try{
+    const token = await getIdToken();
+    r = await fetch('/api/predict', {method:'POST',
+      headers:{'Authorization':'Bearer '+(token||''),'Content-Type':'application/json'},
+      body: JSON.stringify({ matchId, a, b })});
+  }catch(e){ toast('Error de conexión'); return; }
+  if(!r.ok){
+    let msg='No se pudo guardar';
+    try{ const j=await r.json(); if(j.error) msg=j.error; }catch(e){}
+    toast(msg); renderDayList(); return;
+  }
+  state.preds[state.meId] = state.preds[state.meId] || {};
+  state.preds[state.meId][matchId] = {a,b};
   toast('Pronóstico enviado');
-  // reemplaza solo esta tarjeta para mostrar el pronóstico en firme (bloqueado)
   const el=document.getElementById('card_'+matchId);
   if(el){ el.outerHTML = matchCard(m); }
 }
@@ -728,6 +841,7 @@ function renderTabla(){
 
   if(state.tablaMode==='general'){
     const t=totals(null);
+    html += statsCardHTML();
     const anyFinished = state.matches.some(m=>m.finished);
     if(!anyFinished) html += `<div class="hint" style="margin-bottom:14px">Aún no hay resultados cargados, así que todos están a 0. Los puntos se suman en cuanto el organizador registre los marcadores finales.</div>`;
     html += standingsTable(t);
@@ -741,6 +855,21 @@ function renderTabla(){
       view.innerHTML=html; return;
     }
     if(!state.selectedWeek || !weeks[state.selectedWeek]) state.selectedWeek=weekKeys[weekKeys.length-1];
+    // Palmares: ganadores de semanas ya cerradas (pasado el domingo)
+    const palmares = weekKeys.map((w,i)=>{
+      const wmX=weeks[w];
+      if(!weekIsClosed(wmX[0].kickoff)) return null;
+      const tt=totals(new Set(wmX.map(m=>m.id))).filter(r=>r.played>0);
+      if(!tt.length || tt[0].pts<=0) return null;
+      return {n:i+1, name:tt[0].name, pts:tt[0].pts};
+    }).filter(Boolean);
+    if(palmares.length){
+      html += `<div class="card palmares"><p class="eyebrow">🏆 Ganadores por semana</p>`;
+      for(const p of palmares){
+        html += `<div class="palmrow"><span class="pw">Semana ${p.n}</span><span class="pn">🏆 ${esc(p.name)}</span><span class="pp">${p.pts} pts</span></div>`;
+      }
+      html += `</div>`;
+    }
     html += `<div class="weekpick">`;
     weekKeys.forEach((w,i)=>{ html += `<button class="${w===state.selectedWeek?'active':''}" onclick="selectWeek('${w}')">Semana ${i+1}</button>`; });
     html += `</div>`;
@@ -749,9 +878,14 @@ function renderTabla(){
     const dates=wms.map(m=>dObj(m.kickoff)).sort((a,b)=>a-b);
     const range = dates.length ? `${dates[0].getDate()} ${MON[dates[0].getMonth()]} – ${dates[dates.length-1].getDate()} ${MON[dates[dates.length-1].getMonth()]}` : '';
     const t=totals(ids).filter(r=>r.played>0);
-    if(t.length && t[0].pts>0){
+    const closed = weekIsClosed(wms[0].kickoff);
+    const wn = weekKeys.indexOf(state.selectedWeek)+1;
+    if(closed && t.length && t[0].pts>0){
       const w=t[0];
       html += `<div class="winner"><div class="tro">🏆</div><div><div class="t">Ganador de la semana</div><div class="n">${esc(w.name)}</div><div class="p">${w.pts} pts · ${w.exact} marcador${w.exact===1?'':'es'} exacto${w.exact===1?'':'s'} · ${range}</div></div></div>`;
+      html += `<button class="btn ghost sm" style="margin:-6px 0 14px" data-n="${esc(w.name)}" data-w="${wn}" data-p="${w.pts}" onclick="shareWinnerBtn(this)">📸 Compartir imagen del ganador</button>`;
+    } else if(!closed){
+      html += `<div class="hint" style="margin-bottom:14px">⏳ Semana en curso (${range}). El ganador se define el <b>${weekEndLabel(wms[0].kickoff)}</b>. Clasificación parcial por ahora:</div>`;
     } else {
       html += `<div class="hint" style="margin-bottom:14px">Semana del ${range}. Sin puntos todavía.</div>`;
     }
@@ -778,6 +912,8 @@ function selectWeek(w){ state.selectedWeek=w; render(); }
 
 /* ---------- Organizador ---------- */
 function renderOrg(){
+  // Si la cuenta tiene el rol de organizador en Entra, entra directo (sin PIN)
+  if(state.isOrganizer) state.adminUnlocked = true;
   if(!state.adminUnlocked){
     view.innerHTML = `<div class="card">
       <p class="eyebrow">Acceso de organizador</p>
@@ -864,7 +1000,8 @@ async function addMatch(){
   if(!w){ toast('Elige fecha y hora'); return; }
   state.matches = await store.get(K.matches) || [];
   state.matches.push({id:uid(), teamA:a, teamB:b, kickoff:new Date(w).toISOString(), finished:false, scoreA:null, scoreB:null});
-  await store.set(K.matches, state.matches);
+  const ok=await store.set(K.matches, state.matches);
+  if(!ok){ toast('Tu cuenta no tiene permiso de organizador'); return; }
   toast('Partido agregado'); render();
 }
 async function saveResult(id){
@@ -874,9 +1011,9 @@ async function saveResult(id){
   state.matches = await store.get(K.matches) || state.matches;
   const m=state.matches.find(x=>x.id===id); if(!m) return;
   m.scoreA=a; m.scoreB=b; m.finished=true;
-  await store.set(K.matches, state.matches);
+  const ok=await store.set(K.matches, state.matches);
+  if(!ok){ toast('Tu cuenta no tiene permiso de organizador'); return; }
   toast('Resultado guardado · puntos actualizados');
-  // actualiza solo esta fila (sin repintar todo el organizador)
   const d=document.getElementById('amd_'+id);
   if(d) d.innerHTML=`${dateLabel(m.kickoff)} · ${timeLabel(m.kickoff)} · <span style="color:var(--lime)">resultado cargado</span>`;
   const btn=document.getElementById('amb_'+id);
@@ -885,7 +1022,8 @@ async function saveResult(id){
 async function delMatch(id){
   if(!confirm('¿Eliminar este partido? Se borrarán también sus pronósticos del cálculo.')) return;
   state.matches = (await store.get(K.matches) || state.matches).filter(m=>m.id!==id);
-  await store.set(K.matches, state.matches);
+  const ok=await store.set(K.matches, state.matches);
+  if(!ok){ toast('Tu cuenta no tiene permiso de organizador'); return; }
   render();
 }
 async function saveSettings(){
@@ -893,8 +1031,9 @@ async function saveSettings(){
     pExact:parseInt(document.getElementById('setExact').value,10)||0,
     pDiff:parseInt(document.getElementById('setDiff').value,10)||0,
     pResult:parseInt(document.getElementById('setResult').value,10)||0};
-  state.settings=s; await store.set(K.settings, s);
-  toast('Reglamento guardado'); render();
+  const ok=await store.set(K.settings, s);
+  if(!ok){ toast('Tu cuenta no tiene permiso de organizador'); return; }
+  state.settings=s; toast('Reglamento guardado'); render();
 }
 async function changePin(){
   const v=document.getElementById('newPin').value.trim();
@@ -1016,6 +1155,9 @@ const SEED_FIXTURES = [
   }
   state.meId   = account.localAccountId || account.homeAccountId;
   state.meName = msalName(account);
+  // Rol de organizador desde el token de Entra (claim "roles")
+  const claims = account.idTokenClaims || {};
+  state.isOrganizer = Array.isArray(claims.roles) && claims.roles.includes('Organizer');
   await ensureUser(state.meId, state.meName);
 
   await loadAll();
@@ -1032,6 +1174,9 @@ const SEED_FIXTURES = [
     }
   }
   render();
+  // Cuenta regresiva al próximo partido (actualiza solo el contador, no repinta)
+  updateCountdown();
+  setInterval(updateCountdown, 1000);
   // Refresca cada minuto para cerrar partidos al llegar la hora del saque,
   // salvo que el usuario esté escribiendo un marcador en ese momento.
   setInterval(()=>{
