@@ -70,13 +70,27 @@
   /* ---------- Tabs ---------- */
   nav.tabs{display:flex;gap:6px;margin:14px 0 18px;padding:5px;background:var(--bg2);border:1px solid var(--line-soft);border-radius:12px}
   nav.tabs button{
-    flex:1;border:0;background:transparent;color:var(--muted);
-    font-family:Inter;font-weight:700;font-size:13.5px;padding:10px 6px;border-radius:8px;cursor:pointer;
-    transition:.15s;letter-spacing:.2px;
+    flex:1;border:0;background:transparent;color:var(--muted);position:relative;
+    font-family:Inter;font-weight:700;font-size:12.5px;padding:10px 4px;border-radius:8px;cursor:pointer;
+    transition:.15s;letter-spacing:.1px;white-space:nowrap;
   }
-  nav.tabs button .ic{margin-right:5px}
+  nav.tabs button .ic{margin-right:4px}
   nav.tabs button:hover{color:var(--text)}
   nav.tabs button.active{background:var(--surface2);color:var(--text);box-shadow:0 1px 0 rgba(255,255,255,.04) inset, 0 0 0 1px var(--line)}
+  .tabbadge{display:inline-block;min-width:17px;height:17px;line-height:17px;margin-left:5px;padding:0 4px;
+    background:var(--lime);color:#06210A;font-family:Archivo;font-weight:900;font-size:10.5px;border-radius:9px;vertical-align:top}
+  @media(max-width:430px){ nav.tabs button{font-size:11.5px;padding:10px 2px} nav.tabs button .ic{display:none} }
+  /* Perfil: mis pronósticos */
+  .mprow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-top:1px solid var(--line-soft)}
+  .mprow:first-of-type{border-top:0}
+  .mp-info{min-width:0;flex:1}
+  .mp-teams{font-family:Archivo;font-weight:700;font-size:13.5px;line-height:1.25}
+  .mp-teams .mp-mid{color:var(--muted2);font-weight:800;font-size:11px;margin:0 4px}
+  .mp-sub{font-size:11.5px;color:var(--muted);margin-top:3px}
+  .mp-sub b{color:var(--text);font-family:Archivo;font-weight:800}
+  .mp-right{flex:none;display:flex;align-items:center;gap:8px}
+  .mp-res{font-family:Archivo;font-weight:900;font-size:15px;color:var(--text);font-variant-numeric:tabular-nums}
+  .mp-pend{font-size:11px;font-weight:700;color:var(--muted);background:var(--bg2);border:1px solid var(--line);padding:5px 10px;border-radius:999px}
 
   /* ---------- Generic ---------- */
   .muted{color:var(--muted)}
@@ -260,8 +274,9 @@
   </header>
 
   <nav class="tabs">
-    <button data-tab="partidos" class="active" onclick="setTab('partidos')"><span class="ic">📋</span>Partidos</button>
+    <button data-tab="partidos" class="active" onclick="setTab('partidos')"><span class="ic">📋</span>Partidos<span class="tabbadge" id="tabBadge" style="display:none">0</span></button>
     <button data-tab="tabla" onclick="setTab('tabla')"><span class="ic">🏆</span>Tabla</button>
+    <button data-tab="perfil" onclick="setTab('perfil')"><span class="ic">👤</span>Perfil</button>
     <button data-tab="org" onclick="setTab('org')"><span class="ic">⚙️</span>Organizador</button>
   </nav>
 
@@ -577,9 +592,16 @@ function setTab(t){ state.tab=t; document.querySelectorAll('nav.tabs button').fo
 
 function render(){
   refreshUserChip();
+  updateTabBadge();
   if(state.tab==='partidos') renderPartidos();
   else if(state.tab==='tabla') renderTabla();
+  else if(state.tab==='perfil') renderPerfil();
   else renderOrg();
+}
+function updateTabBadge(){
+  const b=document.getElementById('tabBadge'); if(!b) return;
+  const n = state.meId ? state.matches.filter(m=> isEditable(m) && !predOf(state.meId,m.id)).length : 0;
+  if(n>0){ b.textContent=n; b.style.display=''; } else { b.style.display='none'; }
 }
 function refreshUserChip(){
   const nm=document.getElementById('userchipname');
@@ -659,6 +681,78 @@ async function shareWinner(name, weekN, pts){
     const file=new File([blob],'ganador-semana-'+weekN+'.png',{type:'image/png'});
     if(navigator.canShare && navigator.canShare({files:[file]})){
       try{ await navigator.share({files:[file], title:'Ganador de la semana'}); return; }catch(e){}
+    }
+    const url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download=file.name; a.click(); URL.revokeObjectURL(url);
+  },'image/png');
+}
+
+/* ---------- Perfil: mis estadísticas + mis pronósticos ---------- */
+function renderPerfil(){
+  if(!state.meId){ view.innerHTML=`<div class="empty"><div class="big">👤</div><div class="h">Inicia sesión</div></div>`; return; }
+  let html = statsCardHTML();
+  if(!html){
+    html = `<div class="card"><p class="eyebrow">📊 Mis estadísticas</p><p class="hint">Tus estadísticas aparecerán cuando el organizador cargue los primeros resultados.</p></div>`;
+  }
+  const mine = state.matches
+    .filter(m=> predOf(state.meId, m.id))
+    .sort((a,b)=> dObj(b.kickoff)-dObj(a.kickoff)); // más recientes primero
+  if(!mine.length){
+    html += `<div class="empty" style="padding:34px 18px"><div class="big">📝</div><div class="h">Aún no has pronosticado</div><div class="hint">Ve a <b>Partidos</b> y envía tus marcadores del día.</div></div>`;
+    view.innerHTML=html; return;
+  }
+  html += `<div class="card"><p class="eyebrow">📝 Mis pronósticos (${mine.length})</p>`;
+  for(const m of mine){
+    const p=predOf(state.meId, m.id);
+    let right;
+    if(m.finished){
+      const pt=pointsFor(p,m);
+      right = `<span class="mp-res">${m.scoreA}–${m.scoreB}</span><span class="pts ${pt>0?'hit':'zero'}">+${pt}</span>`;
+    } else {
+      right = `<span class="mp-pend">${hasKickedOff(m)?'En juego':'Pendiente'}</span>`;
+    }
+    html += `<div class="mprow">
+      <div class="mp-info">
+        <div class="mp-teams">${flag(m.teamA)} ${esc(m.teamA)} <span class="mp-mid">VS</span> ${esc(m.teamB)} ${flag(m.teamB)}</div>
+        <div class="mp-sub">${dateLabel(m.kickoff)} · tu marcador: <b>${p.a}–${p.b}</b></div>
+      </div>
+      <div class="mp-right">${right}</div>
+    </div>`;
+  }
+  html += `</div>`;
+  view.innerHTML = html;
+}
+
+/* ---------- Compartir imagen de la tabla general ---------- */
+async function shareRanking(){
+  const rows = totals(null).slice(0,12);
+  if(!rows.length){ toast('Aún no hay tabla'); return; }
+  try{ await document.fonts.ready; }catch(e){}
+  const W=1080, top=210, rh=74, padB=80;
+  const H=top + rows.length*rh + padB;
+  const c=document.createElement('canvas'); c.width=W; c.height=H;
+  const x=c.getContext('2d');
+  const g=x.createLinearGradient(0,0,0,H); g.addColorStop(0,'#0B0E14'); g.addColorStop(1,'#12161F');
+  x.fillStyle=g; x.fillRect(0,0,W,H);
+  x.fillStyle='#C8FF4D'; x.fillRect(0,0,W,9);
+  x.textAlign='left';
+  x.fillStyle='#EDF1F7'; x.font='900 56px Archivo, sans-serif'; x.fillText('LA QUINIELA', 60, 104);
+  x.fillStyle='#8B95A7'; x.font='700 27px Inter, sans-serif'; x.fillText('Tabla general · Mundial', 62, 146);
+  rows.forEach((r,i)=>{
+    const y=top + i*rh;
+    if(i%2===0){ x.fillStyle='rgba(255,255,255,.035)'; x.fillRect(40,y-2,W-80,rh-8); }
+    const col = i===0?'#FFC247':(i===1?'#C9D2DE':(i===2?'#E0A55C':'#637087'));
+    x.fillStyle=col; x.font='900 34px Archivo, sans-serif'; x.textAlign='center'; x.fillText(String(i+1), 78, y+rh/2+6);
+    x.textAlign='left'; x.fillStyle='#EDF1F7'; x.font='700 33px Inter, sans-serif';
+    let nm=r.name; while(x.measureText(nm).width>W-380 && nm.length>3){ nm=nm.slice(0,-1); }
+    x.fillText(nm===r.name?nm:nm+'…', 140, y+rh/2+6);
+    x.textAlign='right'; x.fillStyle='#C8FF4D'; x.font='900 38px Archivo, sans-serif'; x.fillText(r.pts+' pts', W-60, y+rh/2+6);
+  });
+  x.textAlign='center'; x.fillStyle='#637087'; x.font='600 24px Inter, sans-serif'; x.fillText('La Quiniela · Mundial', W/2, H-30);
+  c.toBlob(async (blob)=>{
+    const file=new File([blob],'quiniela-tabla.png',{type:'image/png'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({files:[file], title:'Tabla de la quiniela'}); return; }catch(e){}
     }
     const url=URL.createObjectURL(blob), a=document.createElement('a');
     a.href=url; a.download=file.name; a.click(); URL.revokeObjectURL(url);
@@ -824,6 +918,7 @@ async function savePred(matchId){
   state.preds[state.meId] = state.preds[state.meId] || {};
   state.preds[state.meId][matchId] = {a,b};
   toast('Pronóstico enviado');
+  updateTabBadge();
   const el=document.getElementById('card_'+matchId);
   if(el){ el.outerHTML = matchCard(m); }
 }
@@ -845,6 +940,7 @@ function renderTabla(){
     const anyFinished = state.matches.some(m=>m.finished);
     if(!anyFinished) html += `<div class="hint" style="margin-bottom:14px">Aún no hay resultados cargados, así que todos están a 0. Los puntos se suman en cuanto el organizador registre los marcadores finales.</div>`;
     html += standingsTable(t);
+    if(anyFinished) html += `<button class="btn ghost sm" style="margin-top:14px;width:100%" onclick="shareRanking()">📸 Compartir imagen de la tabla</button>`;
   } else {
     // weeks that have finished matches
     const weeks={};
